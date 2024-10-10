@@ -5,3 +5,6 @@ data/superglue/multirc/*
 data/superglue/rte/*
 data/superglue/wic/*
 log/*
+*/__pycache__/*
+peft_models/*
+results/*
