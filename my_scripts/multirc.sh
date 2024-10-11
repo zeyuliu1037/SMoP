@@ -20,6 +20,6 @@ do
     for multiplier in 2 4 10 20
     do
         full=$((length * multiplier))
-        python scripts/train.py --lr 0.5  --batch_size 32  --epoch 50 --max_length 512  --model_name_or_path t5-base --tokenizer_name_or_path t5-base --warmup_ratio 0.06 --method prompt-routing --dataset_name multirc_superglue --num_virtual_tokens $length --num_virtual_tokens_full $full --perturb_router True --topk 1
+        python scripts/train.py --lr 0.5  --batch_size 32  --epoch 50 --max_length 512  --model_name_or_path t5-base --tokenizer_name_or_path t5-base --warmup_ratio 0.06 --method prompt-routing --dataset_name multirc --num_virtual_tokens $length --num_virtual_tokens_full $full --perturb_router True --topk 1
     done
 done
