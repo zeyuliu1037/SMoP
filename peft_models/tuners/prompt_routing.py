@@ -111,15 +111,8 @@ class PromptRoutingEmbedding(torch.nn.Module):
 
         if self.config.perturb_router:
             sigma = 1
-            if self.config.mlp:
-                print("Using MLP for router")
-                self.router = torch.nn.Sequential(
-                    linear,
-                    torch.nn.Dropout(p=0.2),
-                    torch.nn.Linear(self.n_routes, self.n_routes, bias=False),
-                    GaussianNoise(sigma=sigma),
-                )
-            elif self.config.nonlinear:
+            if self.config.nonlinear:
+                assert self.config.mlp == True
                 print("Using non-linear activation for router")
                 self.router = torch.nn.Sequential(
                     linear,
@@ -128,6 +121,15 @@ class PromptRoutingEmbedding(torch.nn.Module):
                     torch.nn.Linear(self.n_routes, self.n_routes, bias=False),
                     GaussianNoise(sigma=sigma),
                 )
+            elif self.config.mlp:
+                print("Using MLP for router")
+                self.router = torch.nn.Sequential(
+                    linear,
+                    torch.nn.Dropout(p=0.2),
+                    torch.nn.Linear(self.n_routes, self.n_routes, bias=False),
+                    GaussianNoise(sigma=sigma),
+                )
+ 
             else:
                 raise NotImplementedError
         else:
