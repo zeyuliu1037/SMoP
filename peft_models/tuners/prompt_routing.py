@@ -78,6 +78,18 @@ class PromptRoutingConfig(PromptLearningConfig):
             "help": "Whether to use the auxiliary load balancing loss or not."
         }    
     )
+    mlp: Optional[bool] = field(
+        default=False, 
+        metadata={
+            "help": "Whether to use mlp for router or not."
+        }    
+    )
+    nonlinear: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "Whether to use non-linear activation for router or not."
+        }
+    )
 
     def __post_init__(self):
         self.peft_type = PeftType.PROMPT_ROUTING
@@ -99,11 +111,25 @@ class PromptRoutingEmbedding(torch.nn.Module):
 
         if self.config.perturb_router:
             sigma = 1
-            self.router = torch.nn.Sequential(
-                linear,
-                GaussianNoise(sigma=sigma),
-                # torch.nn.Dropout(p=0.2)
-            )        
+            if self.config.mlp:
+                print("Using MLP for router")
+                self.router = torch.nn.Sequential(
+                    linear,
+                    torch.nn.Dropout(p=0.2),
+                    torch.nn.Linear(self.n_routes, self.n_routes, bias=False),
+                    GaussianNoise(sigma=sigma),
+                )
+            elif self.config.nonlinear:
+                print("Using non-linear activation for router")
+                self.router = torch.nn.Sequential(
+                    linear,
+                    torch.nn.Dropout(p=0.2),
+                    torch.nn.LeakyReLU(),
+                    torch.nn.Linear(self.n_routes, self.n_routes, bias=False),
+                    GaussianNoise(sigma=sigma),
+                )
+            else:
+                raise NotImplementedError
         else:
             self.router = torch.nn.Sequential(
                 # torch.nn.utils.weight_norm(linear, dim=0),
