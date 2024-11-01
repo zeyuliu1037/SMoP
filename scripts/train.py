@@ -106,6 +106,8 @@ def train(args):
             args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.num_virtual_tokens_full=} {args.topk=} gumbel=True {args.random_seed=}"
         else:
             args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.num_virtual_tokens_full=} perturb_router={bool(args.perturb_router)} {args.topk=} {args.random_seed=}"
+        if args.my_weighted_average:
+            args_string += " my_weighted_average=True"
     else:
         args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.random_seed=}"
     args_string = args_string.replace('args.', "")
@@ -133,7 +135,7 @@ def train(args):
     elif args.method == "prompt-tuning":
         peft_config = PromptTuningConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens)
     elif args.method == "prompt-routing":
-        peft_config = PromptRoutingConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, num_virtual_tokens_full=args.num_virtual_tokens_full, perturb_router=args.perturb_router, topk=args.topk, stochastic=args.stochastic, gumbel=args.gumbel)
+        peft_config = PromptRoutingConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, num_virtual_tokens_full=args.num_virtual_tokens_full, perturb_router=args.perturb_router, topk=args.topk, stochastic=args.stochastic, gumbel=args.gumbel, my_weighted_average=args.my_weighted_average)
 
     # Pre-trained model configuraitons
     config = AutoConfig.from_pretrained(model_name_or_path)
@@ -565,6 +567,8 @@ if __name__ == "__main__":
     parser.add_argument('--topk', type=int, default=1)
     parser.add_argument('--stochastic', type=_bool, default=False)
     parser.add_argument('--gumbel', type=_bool, default=False)
+
+    parser.add_argument('--my_weighted_average', type=_bool, default=False)
     args = parser.parse_args()
 
     train(args)

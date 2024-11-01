@@ -79,6 +79,13 @@ class PromptRoutingConfig(PromptLearningConfig):
         }    
     )
 
+    my_weighted_average: Optional[bool] = field(
+        default=False, 
+        metadata={
+            "help": "Whether to use the weighted average across prompts."
+        }    
+    )
+
     def __post_init__(self):
         self.peft_type = PeftType.PROMPT_ROUTING
 
@@ -116,6 +123,9 @@ class PromptRoutingEmbedding(torch.nn.Module):
         self.load_counts = torch.zeros((self.n_routes,), device='cuda', requires_grad=False)
         self.probs_sum = torch.zeros_like(self.load_counts)
         self.analysis = False
+        
+        self.weight_for_prompt = torch.nn.Parameter(torch.randn(self.n_routes))
+
 
 
     def forward(self, indices, input_ids, inputs_embeds, attention_mask, base_model=None):
@@ -150,6 +160,10 @@ class PromptRoutingEmbedding(torch.nn.Module):
         
         if not self.config.stochastic:
             prompt_embeddings = self.embedding(idx) * values.unsqueeze(-1).unsqueeze(-1)
+            # print(f"\n\nPrompt embeddings shape: {prompt_embeddings.shape}\n\n")
+            # exit()
+            if self.config.my_weighted_average:
+                prompt_embeddings = prompt_embeddings*(self.weight_for_prompt.unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
             prompt_embeddings = torch.sum(prompt_embeddings, dim=1).squeeze()
             balancing_factor = probs_mean * load_counts #  probs_mean * load_counts 
         else:
