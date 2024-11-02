@@ -163,7 +163,7 @@ class PromptRoutingEmbedding(torch.nn.Module):
             # print(f"\n\nPrompt embeddings shape: {prompt_embeddings.shape}\n\n")
             # exit()
             if self.config.my_weighted_average:
-                prompt_embeddings = prompt_embeddings*(self.weight_for_prompt.unsqueeze(0).unsqueeze(-1).unsqueeze(-1))
+                prompt_embeddings = prompt_embeddings*(self.weight_for_prompt.unsqueeze(0).unsqueeze(-1).unsqueeze(-1))/torch.sum(self.weight_for_prompt)
             prompt_embeddings = torch.sum(prompt_embeddings, dim=1).squeeze()
             balancing_factor = probs_mean * load_counts #  probs_mean * load_counts 
         else:
