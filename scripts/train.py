@@ -169,6 +169,8 @@ def train(args):
     
     # Optimizer, Scheduler
     total_steps = len(train_dataloader) // accum_steps * epoch
+    # print("Total steps: ", total_steps, 'train size: ', len(train_dataloader))
+    # exit()
     warmup_steps = int(total_steps * args.warmup_ratio)
     if "t5" in args.model_name_or_path:
         if args.method == 'prompt-routing':
