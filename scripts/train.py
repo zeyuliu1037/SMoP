@@ -124,17 +124,22 @@ def train(args):
     ### PEFT configurations
     task_type = "SEQ_CLS" if "roberta" in args.model_name_or_path else "SEQ_2_SEQ_LM"
     # Baseline methods
-    if args.method == "lora":
-        peft_config = LoraConfig(task_type=task_type, inference_mode=False, r=8, lora_alpha=8, lora_dropout=0.1)
-    elif args.method == "prefix-tuning":
-        peft_config = PrefixTuningConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens) #, prefix_projection=True, encoder_hidden_size=512)
-    elif args.method == "p-tuning":
-        peft_config = PromptEncoderConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, encoder_hidden_size=128)
-    elif args.method == "prompt-tuning":
-        peft_config = PromptTuningConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens)
-    elif args.method == "prompt-routing":
-        peft_config = PromptRoutingConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, num_virtual_tokens_full=args.num_virtual_tokens_full, perturb_router=args.perturb_router, topk=args.topk, stochastic=args.stochastic, gumbel=args.gumbel)
-
+    peft_configs = []
+    if "prefix-tuning" in args.method:
+        prefix_config = PrefixTuningConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens) #, prefix_projection=True, encoder_hidden_size=512)
+        peft_configs.append(prefix_config)
+    elif "p-tuning" in args.method:
+        pt_config = PromptEncoderConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, encoder_hidden_size=128)
+        peft_configs.append(pt_config)
+    elif "prompt-tuning" in args.method:
+        prompt_config = PromptTuningConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens)
+        peft_configs.append(prompt_config)
+    elif "prompt-routing" in args.method:
+        rout_config = PromptRoutingConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, num_virtual_tokens_full=args.num_virtual_tokens_full, perturb_router=args.perturb_router, topk=args.topk, stochastic=args.stochastic, gumbel=args.gumbel)
+        peft_configs.append(rout_config)
+    if "lora" in args.method:
+        lora_config = LoraConfig(task_type=task_type, inference_mode=False, r=8, lora_alpha=16, lora_dropout=0.1)
+        peft_configs.append(lora_config)
     # Pre-trained model configuraitons
     config = AutoConfig.from_pretrained(model_name_or_path)
     if config.pad_token_id == None: 
@@ -155,32 +160,49 @@ def train(args):
         #     model = T5ForConditionalGenerationWithPrefix.from_pretrained(model_name_or_path, config=config)
         # else:
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path, config=config)
+    else:
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name_or_path, config=config)
 
     model.resize_token_embeddings(len(tokenizer))
     if args.method != "full":
-        model = get_peft_model(model, peft_config)
+        model = get_peft_model(model, peft_configs[0]) # 18432
+        if "-lora" in args.method:
+            model = get_peft_model(model, LoraConfig(task_type=task_type, inference_mode=False, r=8, lora_alpha=8, lora_dropout=0.1)) # 884736
         # model = FunctionalPromptModelForSeq2SeqLM(model, peft_config)
+        for name, param in model.named_parameters():
+            if 'prompt_encoder.embedding' in name or 'prompt_encoder.router' in name:
+                param.requires_grad_(True)
         model.print_trainable_parameters()
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         print(name)
+    # exit()
     model = model.to(device)
 
     # model.prompt_encoder.router[0].weight.data = kmean_cluster(args.random_seed)
 
     tuning_params = [p for n, p in list(model.named_parameters()) if p.requires_grad]
-    
+    lora_params = [p for n, p in list(model.named_parameters()) if 'lora' in n and p.requires_grad]
+    other_params = [p for n, p in list(model.named_parameters()) if 'lora' not in n and p.requires_grad]
     # Optimizer, Scheduler
     total_steps = len(train_dataloader) // accum_steps * epoch
-    # print("Total steps: ", total_steps, 'train size: ', len(train_dataloader))
+    # print("Total steps: ", total_steps, len(train_dataloader), accum_steps, epoch)
     # exit()
     warmup_steps = int(total_steps * args.warmup_ratio)
     if "t5" in args.model_name_or_path:
         if args.method == 'prompt-routing':
             tuning_params = [
                 # {'params': model.base_model.parameters(), 'lr': args.lr},
+                {'params': lora_params, 'lr': 0.005},
                 {'params': model.prompt_encoder.embedding.parameters(), 'lr': args.lr}, 
                 {'params': model.prompt_encoder.router.parameters(), 'lr': args.lr}
                 ]
             optimizer = Adafactor(tuning_params, lr=args.lr, relative_step=False, weight_decay=1e-5, scale_parameter=False)
         else:    
+            tuning_params = [
+                {'params': lora_params, 'lr': 0.005},
+                {'params': other_params, 'lr': args.lr}, 
+                ]
             optimizer = Adafactor(tuning_params, lr=args.lr, relative_step=False, weight_decay=1e-5, scale_parameter=False)
     else:
         optimizer = torch.optim.AdamW(tuning_params, lr=args.lr, eps=1e-8, weight_decay=args.weight_decay)
@@ -212,11 +234,15 @@ def train(args):
     log_path = f"{log_dir}/{args_string}/load_counts_log.txt"
     l = open(log_path, 'wt')
 
+    if args.eval_flops:
+        model.eval()
+        with torch.no_grad():
+            val_loss, preds, answers = evaluate_epoch(model, scaler, val_dataloader, device, tokenizer, text_to_text, test=True, eval_flops=True)
 
     for e in range(epoch):
         l.write(f"Epoch {e+1}\n")
         model.train()
-        train_loss, step, log_loss, train_time = train_epoch(model, optimizer, scheduler, scaler, train_dataloader, accum_steps, tb_writer, step, log_step, log_loss, device, metric, tokenizer)
+        train_loss, step, log_loss, train_time = train_epoch(model, optimizer, scheduler, scaler, train_dataloader, accum_steps, tb_writer, step, log_step, log_loss, device, metric, tokenizer, config=config)
         train_time_total += train_time
         if args.method == 'prompt-routing':
             l.write(f"Train: {model.prompt_encoder.load_counts}\n")
@@ -317,7 +343,22 @@ def train(args):
 
     l.close()
 
-def train_epoch(model, optimizer, scheduler, scaler, train_dataloader, accum_steps, tb_writer, step, log_step, log_loss, device, metric, tokenizer):
+class ModelWrapper(torch.nn.Module):
+    def __init__(self, model):
+        super(ModelWrapper, self).__init__()
+        self.model = model
+
+    def forward(self, input_ids, attention_mask, decoder_input_ids):
+        return self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+        ).logits
+def custom_embedding_hook(module, inputs, outputs):
+    # Avoid re-defining total_ops
+    if not hasattr(module, "total_ops"):
+        module.total_ops = torch.Tensor([0])
+def train_epoch(model, optimizer, scheduler, scaler, train_dataloader, accum_steps, tb_writer, step, log_step, log_loss, device, metric, tokenizer, config=None):
     st = time.time()
     model.train()
     criterion = torch.nn.MSELoss()
@@ -329,15 +370,50 @@ def train_epoch(model, optimizer, scheduler, scaler, train_dataloader, accum_ste
 
         ids = train_sample["ids"]
         input_ids = train_sample["input_ids"].to(device)
-        # flops, params = profile(model, inputs=(input_ids,))
-        # print(flops)
-        # print(params)
+        
         if input_ids.shape[1] < min_len:
             min_len = input_ids.shape[1]
         att_mask = torch.ones_like(input_ids) * (input_ids != tokenizer.pad_token_id).long()
         labels = train_sample["label"].to(device)
         labels = labels.float() if metric == "spearman" else labels.long()
 
+        # def skip_embedding_hooks(module):
+        #     if isinstance(module, torch.nn.Embedding):
+        #         module.register_forward_hook(lambda *args: None)
+        # model.apply(skip_embedding_hooks)
+        # model = ModelWrapper(model)
+        # flops, params = profile(model, inputs=(input_ids, att_mask, labels))
+        # print('shape: ', input_ids.shape, att_mask.shape, labels.shape)
+        # print('flops: ', flops / 1e9)
+        # print(params)
+        # exit()
+        # from torchprofile import profile_macs
+
+        # with torch.no_grad():
+        #     macs = profile_macs(model, args=(input_ids, att_mask, labels))
+        #     macs = macs * 2 / len(input_ids)
+        #     print(f"MACs: {macs / 1e9:.2f}G")
+        # exit()
+        # from peft_models.utils import shift_tokens_right
+        # decoder_input_ids = shift_tokens_right(labels, config.pad_token_id, config.decoder_start_token_id)
+        # inputs = {
+        #     'input_ids': input_ids,
+        #     'decoder_input_ids': decoder_input_ids,
+        #     'attention_mask': att_mask,
+        # }
+        # flops, macs, params = get_model_profile(
+        #     model,
+        #     args=(input_ids, att_mask, decoder_input_ids),
+        #     detailed=True,
+        #     module_depth=-1,
+        #     top_modules=1,
+        #     warm_up=10,
+        #     as_string=False,
+        # )
+        # print(f"input_ids len: {len(input_ids)}, FLOPs: {flops /len(input_ids) / 1e9:.2f}G")
+        # print(f"input_ids len: {len(input_ids)}, MACs: {macs /len(input_ids) / 1e9:.2f}G")
+        # print(f"Params: {params / 1e6:.2f}M")
+        # exit()
         outputs = model.forward(input_ids=input_ids, attention_mask=att_mask, labels=labels)
         try:
             model.prompt_encoder.save_load_information(ids)
@@ -393,7 +469,7 @@ def train_epoch(model, optimizer, scheduler, scaler, train_dataloader, accum_ste
     print("{:.2f} seconds".format(time.time()-st))
     return sum(epoch_loss) / len(epoch_loss), step, log_loss, train_time
 
-def evaluate_epoch(model, scaler, val_dataloader, device, tokenizer, text_to_text, test):
+def evaluate_epoch(model, scaler, val_dataloader, device, tokenizer, text_to_text, test, eval_flops=False):
     val_loss = []
     losses = []
     preds, answers = [], []
@@ -405,8 +481,21 @@ def evaluate_epoch(model, scaler, val_dataloader, device, tokenizer, text_to_tex
             input_ids = val_sample["input_ids"].to(device)
             labels = val_sample["label"].to(device)
             att_mask = torch.ones_like(input_ids) * (input_ids != tokenizer.pad_token_id).long()
+            if eval_flops:
+                from deepspeed.profiling.flops_profiler import get_model_profile, FlopsProfiler
+                profiler = FlopsProfiler(model)
+                profiler.start_profile()
             outputs = model(input_ids=input_ids, attention_mask=att_mask, labels=labels, output_attentions=True)
-
+            if eval_flops:
+                profiler.stop_profile()
+                profiler.print_model_profile(
+                    profile_step=1,
+                    module_depth=-1,
+                    top_modules=1,
+                    detailed=False,
+                )
+                print('size of input_ids: ', input_ids.shape)
+                exit()
             if text_to_text:
                 pred = model.generate(input_ids=input_ids, attention_mask=att_mask, max_new_tokens=10)
             else:
@@ -552,7 +641,7 @@ if __name__ == "__main__":
     parser.add_argument('--tokenizer_name_or_path', type=str, default='roberta-base')
     parser.add_argument('--random_seed', type=int, default=42)
 
-    parser.add_argument('--method', type=str, choices=['full', 'lora', 'prefix-tuning', 'p-tuning', 'prompt-tuning', 'prompt-routing']) 
+    parser.add_argument('--method', type=str) 
     parser.add_argument('--num_virtual_tokens', type=int, default=None)
 
     parser.add_argument('--num_virtual_tokens_full', type=int, default=None)
@@ -567,6 +656,8 @@ if __name__ == "__main__":
     parser.add_argument('--topk', type=int, default=1)
     parser.add_argument('--stochastic', type=_bool, default=False)
     parser.add_argument('--gumbel', type=_bool, default=False)
+
+    parser.add_argument('--eval_flops', type=_bool, default=False)
     args = parser.parse_args()
 
     train(args)
